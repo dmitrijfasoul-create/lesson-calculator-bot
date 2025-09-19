@@ -52,7 +52,7 @@ def pick_price(city: str, students: int, monthly_forecast: int) -> tuple[int, st
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     kb = [["Vilnius", "Kaunas", "Klaipėda"]]
     await update.message.reply_text(
-        "🇱🇹📍 Choose city:",
+        "🇱🇹📍 Choose city:  (v2)",
         reply_markup=ReplyKeyboardMarkup(kb, one_time_keyboard=True, resize_keyboard=True)
     )
     return CITY
@@ -158,18 +158,16 @@ async def restart_calc(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
 
-    # Удаляем старое сообщение с кнопками
     try:
         await query.message.delete()
     except Exception:
         pass
 
-    # Сбрасываем сохранённые данные пользователя
     context.user_data.clear()
 
     kb = [["Vilnius", "Kaunas", "Klaipėda"]]
     await query.message.chat.send_message(
-        "🇱🇹📍 Choose city:",
+        "🇱🇹📍 Choose city:  (v2)",
         reply_markup=ReplyKeyboardMarkup(kb, one_time_keyboard=True, resize_keyboard=True)
     )
     return CITY
