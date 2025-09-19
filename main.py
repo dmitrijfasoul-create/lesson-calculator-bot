@@ -145,7 +145,6 @@ async def compute(update: Update, context: ContextTypes.DEFAULT_TYPE):
         [InlineKeyboardButton("🔁 New calculation", callback_data="restart_calc")]
     ])
     sent = await update.message.reply_text(short_msg, reply_markup=keyboard)
-    # Сохраним id отправленного сообщения, чтобы потом удалить
     context.user_data["result_message_id"] = sent.message_id
 
     return ConversationHandler.END
@@ -165,6 +164,8 @@ async def restart_calc(update: Update, context: ContextTypes.DEFAULT_TYPE):
         msg_id = context.user_data.get("result_message_id")
         if msg_id:
             await query.message.chat.delete_message(msg_id)
+        else:
+            await query.message.delete()
     except Exception:
         pass
 
