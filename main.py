@@ -52,7 +52,8 @@ def pick_price(city: str, students: int, monthly_forecast: int) -> tuple[int, st
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     kb = [["Vilnius", "Kaunas", "Klaipėda"]]
     await update.message.reply_text(
-        "🌍 Choose city:",
+        await update.message.reply_text(
+        "🇱🇹 🌍 Choose city:",
         reply_markup=ReplyKeyboardMarkup(kb, one_time_keyboard=True, resize_keyboard=True)
     )
     return CITY
