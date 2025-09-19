@@ -49,10 +49,22 @@ def pick_price(city: str, students: int, monthly_forecast: int) -> tuple[int, st
     else:
         return grid["1-3"], "1-3"
 
+# ---------- Helper ----------
+async def send_and_track(chat, text, context, **kwargs):
+    """Отправляет сообщение и сохраняет его ID в user_data, чтобы потом удалить"""
+    sent = await chat.send_message(text, **kwargs)
+    msgs = context.user_data.get("messages", [])
+    msgs.append(sent.message_id)
+    context.user_data["messages"] = msgs
+    return sent
+
+# ---------- Steps ----------
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     kb = [["Vilnius", "Kaunas", "Klaipėda"]]
-    await update.message.reply_text(
+    await send_and_track(
+        update.message.chat,
         "🇱🇹📍 Choose city:",
+        context,
         reply_markup=ReplyKeyboardMarkup(kb, one_time_keyboard=True, resize_keyboard=True)
     )
     return CITY
@@ -60,13 +72,15 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def choose_city(update: Update, context: ContextTypes.DEFAULT_TYPE):
     city = update.message.text.strip()
     if city not in PRICES:
-        await update.message.reply_text("Please tap a city from the keyboard.")
+        await send_and_track(update.message.chat, "Please tap a city from the keyboard.", context)
         return CITY
     context.user_data["city"] = city
 
     kb = [["1 student", "2 students"]]
-    await update.message.reply_text(
+    await send_and_track(
+        update.message.chat,
         "👥 How many students attend the lesson?",
+        context,
         reply_markup=ReplyKeyboardMarkup(kb, one_time_keyboard=True, resize_keyboard=True)
     )
     return STUDENTS
@@ -76,8 +90,10 @@ async def choose_students(update: Update, context: ContextTypes.DEFAULT_TYPE):
     students = 2 if "2" in text else 1
     context.user_data["students"] = students
 
-    await update.message.reply_text(
+    await send_and_track(
+        update.message.chat,
         "📅 Enter the date of the first lesson (DD.MM.YYYY or YYYY-MM-DD):",
+        context,
         reply_markup=ReplyKeyboardRemove()
     )
     return DATE
@@ -92,27 +108,31 @@ async def get_date(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except ValueError:
             continue
     if not dt:
-        await update.message.reply_text("❗ Invalid date. Use DD.MM.YYYY or YYYY-MM-DD.")
+        await send_and_track(update.message.chat, "❗ Invalid date. Use DD.MM.YYYY or YYYY-MM-DD.", context)
         return DATE
 
     context.user_data["first_date"] = dt
     dim = calendar.monthrange(dt.year, dt.month)[1]
     rem = dim - dt.day + 1
     if rem < 1:
-        await update.message.reply_text("❗ Date seems out of range for the month. Try again.")
+        await send_and_track(update.message.chat, "❗ Date seems out of range for the month. Try again.", context)
         return DATE
 
     context.user_data["days_in_month"] = dim
     context.user_data["days_left"] = rem
     context.user_data["ratio"] = rem / dim
 
-    await update.message.reply_text("🎵 How many lessons does the student want to buy for the rest of this month?")
+    await send_and_track(
+        update.message.chat,
+        "🎵 How many lessons does the student want to buy for the rest of this month?",
+        context
+    )
     return LESSONS
 
 async def compute(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = (update.message.text or "").strip()
     if not text.isdigit() or int(text) <= 0:
-        await update.message.reply_text("❗ Please enter a positive whole number.")
+        await send_and_track(update.message.chat, "❗ Please enter a positive whole number.", context)
         return LESSONS
 
     lessons_partial = int(text)
@@ -145,7 +165,9 @@ async def compute(update: Update, context: ContextTypes.DEFAULT_TYPE):
         [InlineKeyboardButton("🔁 New calculation", callback_data="restart_calc")]
     ])
     sent = await update.message.reply_text(short_msg, reply_markup=keyboard)
-    context.user_data["result_message_id"] = sent.message_id
+    msgs = context.user_data.get("messages", [])
+    msgs.append(sent.message_id)
+    context.user_data["messages"] = msgs
 
     return ConversationHandler.END
 
@@ -153,33 +175,32 @@ async def show_details(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     details = context.user_data.get("details_msg", "No details found.")
-    await query.message.reply_text(details)
+    await send_and_track(query.message.chat, details, context)
 
 async def restart_calc(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
 
-    # Удаляем старое сообщение с результатом, если сохранили его id
+    # Удаляем все старые сообщения
     try:
-        msg_id = context.user_data.get("result_message_id")
-        if msg_id:
+        for msg_id in context.user_data.get("messages", []):
             await query.message.chat.delete_message(msg_id)
-        else:
-            await query.message.delete()
     except Exception:
         pass
 
     context.user_data.clear()
 
     kb = [["Vilnius", "Kaunas", "Klaipėda"]]
-    await query.message.chat.send_message(
+    await send_and_track(
+        query.message.chat,
         "🇱🇹📍 Choose city:",
+        context,
         reply_markup=ReplyKeyboardMarkup(kb, one_time_keyboard=True, resize_keyboard=True)
     )
     return CITY
 
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("❌ Cancelled.", reply_markup=ReplyKeyboardRemove())
+    await send_and_track(update.message.chat, "❌ Cancelled.", context, reply_markup=ReplyKeyboardRemove())
     return ConversationHandler.END
 
 def main():
