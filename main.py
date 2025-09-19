@@ -52,7 +52,7 @@ def pick_price(city: str, students: int, monthly_forecast: int) -> tuple[int, st
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     kb = [["Vilnius", "Kaunas", "Klaipėda"]]
     await update.message.reply_text(
-        "🇱🇹📍 Choose city:  (v2)",
+        "🇱🇹📍 Choose city:",
         reply_markup=ReplyKeyboardMarkup(kb, one_time_keyboard=True, resize_keyboard=True)
     )
     return CITY
@@ -144,7 +144,9 @@ async def compute(update: Update, context: ContextTypes.DEFAULT_TYPE):
         [InlineKeyboardButton("📊 Details", callback_data="show_details")],
         [InlineKeyboardButton("🔁 New calculation", callback_data="restart_calc")]
     ])
-    await update.message.reply_text(short_msg, reply_markup=keyboard)
+    sent = await update.message.reply_text(short_msg, reply_markup=keyboard)
+    # Сохраним id отправленного сообщения, чтобы потом удалить
+    context.user_data["result_message_id"] = sent.message_id
 
     return ConversationHandler.END
 
@@ -158,8 +160,11 @@ async def restart_calc(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
 
+    # Удаляем старое сообщение с результатом, если сохранили его id
     try:
-        await query.message.delete()
+        msg_id = context.user_data.get("result_message_id")
+        if msg_id:
+            await query.message.chat.delete_message(msg_id)
     except Exception:
         pass
 
@@ -167,7 +172,7 @@ async def restart_calc(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     kb = [["Vilnius", "Kaunas", "Klaipėda"]]
     await query.message.chat.send_message(
-        "🇱🇹📍 Choose city:  (v2)",
+        "🇱🇹📍 Choose city:",
         reply_markup=ReplyKeyboardMarkup(kb, one_time_keyboard=True, resize_keyboard=True)
     )
     return CITY
