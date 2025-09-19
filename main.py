@@ -8,13 +8,13 @@ from telegram import (
     InlineKeyboardMarkup, InlineKeyboardButton
 )
 from telegram.ext import (
-    ApplicationBuilder, CommandHandler, MessageHandler, CallbackQueryHandler,
-    ConversationHandler, ContextTypes, filters
+    ApplicationBuilder, CommandHandler, MessageHandler,
+    CallbackQueryHandler, ContextTypes, filters
 )
 
 TOKEN = os.getenv("TELEGRAM_TOKEN")
 
-# ---------- Pricing grids ----------
+# ---------- Pricing ----------
 PRICES = {
     "Vilnius": {
         1: {"1-3": 50, "4-5": 40, "6-7": 35, "8": 33, "9+": 30},
@@ -30,202 +30,177 @@ PRICES = {
     },
 }
 
-# ---------- States ----------
-CITY, STUDENTS, DATE, LESSONS = range(4)
-
-def round_half_away_from_zero(x: float) -> int:
+# ---------- Helpers ----------
+def round_half_away(x):
     return int(Decimal(str(x)).quantize(Decimal("0"), rounding=ROUND_HALF_UP))
 
-def pick_price(city: str, students: int, monthly_forecast: int) -> tuple[int, str]:
+def pick_price(city, students, forecast):
     grid = PRICES[city][students]
-    if monthly_forecast >= 9:
+    if forecast >= 9:
         return grid["9+"], "9+"
-    elif monthly_forecast == 8:
+    elif forecast == 8:
         return grid["8"], "8"
-    elif monthly_forecast >= 6:
+    elif forecast >= 6:
         return grid["6-7"], "6-7"
-    elif monthly_forecast >= 4:
+    elif forecast >= 4:
         return grid["4-5"], "4-5"
     else:
         return grid["1-3"], "1-3"
 
-# ---------- Helper ----------
-async def send_and_track(chat, text, context, **kwargs):
-    """Отправляет сообщение и сохраняет его ID в user_data, чтобы потом удалить"""
-    sent = await chat.send_message(text, **kwargs)
-    msgs = context.user_data.get("messages", [])
-    msgs.append(sent.message_id)
-    context.user_data["messages"] = msgs
-    return sent
+async def track_message(msg, context):
+    """Сохраняем все id сообщений (бота и пользователя)"""
+    if not msg:
+        return
+    ids = context.user_data.get("msgs", [])
+    ids.append(msg.message_id)
+    context.user_data["msgs"] = ids
+
+async def clear_chat(chat, context):
+    """Удаляем все сообщения из предыдущего расчёта"""
+    for mid in context.user_data.get("msgs", []):
+        try:
+            await chat.delete_message(mid)
+        except Exception:
+            pass
+    context.user_data.clear()
 
 # ---------- Steps ----------
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await clear_chat(update.message.chat, context)
     kb = [["Vilnius", "Kaunas", "Klaipėda"]]
-    await send_and_track(
-        update.message.chat,
+    m = await update.message.reply_text(
         "🇱🇹📍 Choose city:",
-        context,
         reply_markup=ReplyKeyboardMarkup(kb, one_time_keyboard=True, resize_keyboard=True)
     )
-    return CITY
+    context.user_data["step"] = "city"
+    await track_message(update.message, context)
+    await track_message(m, context)
 
-async def choose_city(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    city = update.message.text.strip()
-    if city not in PRICES:
-        await send_and_track(update.message.chat, "Please tap a city from the keyboard.", context)
-        return CITY
-    context.user_data["city"] = city
-
-    kb = [["1 student", "2 students"]]
-    await send_and_track(
-        update.message.chat,
-        "👥 How many students attend the lesson?",
-        context,
-        reply_markup=ReplyKeyboardMarkup(kb, one_time_keyboard=True, resize_keyboard=True)
-    )
-    return STUDENTS
-
-async def choose_students(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text = (update.message.text or "").lower()
-    students = 2 if "2" in text else 1
-    context.user_data["students"] = students
-
-    await send_and_track(
-        update.message.chat,
-        "📅 Enter the date of the first lesson (DD.MM.YYYY or YYYY-MM-DD):",
-        context,
-        reply_markup=ReplyKeyboardRemove()
-    )
-    return DATE
-
-async def get_date(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    s = (update.message.text or "").strip()
-    dt = None
-    for fmt in ("%d.%m.%Y", "%Y-%m-%d"):
-        try:
-            dt = datetime.strptime(s, fmt)
-            break
-        except ValueError:
-            continue
-    if not dt:
-        await send_and_track(update.message.chat, "❗ Invalid date. Use DD.MM.YYYY or YYYY-MM-DD.", context)
-        return DATE
-
-    context.user_data["first_date"] = dt
-    dim = calendar.monthrange(dt.year, dt.month)[1]
-    rem = dim - dt.day + 1
-    if rem < 1:
-        await send_and_track(update.message.chat, "❗ Date seems out of range for the month. Try again.", context)
-        return DATE
-
-    context.user_data["days_in_month"] = dim
-    context.user_data["days_left"] = rem
-    context.user_data["ratio"] = rem / dim
-
-    await send_and_track(
-        update.message.chat,
-        "🎵 How many lessons does the student want to buy for the rest of this month?",
-        context
-    )
-    return LESSONS
-
-async def compute(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = (update.message.text or "").strip()
-    if not text.isdigit() or int(text) <= 0:
-        await send_and_track(update.message.chat, "❗ Please enter a positive whole number.", context)
-        return LESSONS
+    step = context.user_data.get("step")
+    await track_message(update.message, context)
 
-    lessons_partial = int(text)
-    city = context.user_data["city"]
-    students = context.user_data["students"]
-    first_date: datetime = context.user_data["first_date"]
-    dim = context.user_data["days_in_month"]
-    rem = context.user_data["days_left"]
-    ratio = context.user_data["ratio"]
+    if step == "city":
+        if text not in PRICES:
+            m = await update.message.reply_text("Please choose from the keyboard.")
+            await track_message(m, context)
+            return
+        context.user_data["city"] = text
+        kb = [["1 student", "2 students"]]
+        m = await update.message.reply_text(
+            "👥 How many students attend the lesson?",
+            reply_markup=ReplyKeyboardMarkup(kb, one_time_keyboard=True, resize_keyboard=True)
+        )
+        context.user_data["step"] = "students"
+        await track_message(m, context)
 
-    monthly_forecast = max(1, round_half_away_from_zero(lessons_partial / ratio))
-    price_per_lesson, bucket = pick_price(city, students, monthly_forecast)
-    total_price = lessons_partial * price_per_lesson
+    elif step == "students":
+        students = 2 if "2" in text else 1
+        context.user_data["students"] = students
+        m = await update.message.reply_text(
+            "📅 Enter the date of the first lesson (DD.MM.YYYY or YYYY-MM-DD):",
+            reply_markup=ReplyKeyboardRemove()
+        )
+        context.user_data["step"] = "date"
+        await track_message(m, context)
 
-    context.user_data["details_msg"] = (
-        f"📍 City: {city}\n"
-        f"👥 Students: {students}\n"
-        f"📅 First lesson: {first_date:%d.%m.%Y}\n"
-        f"📆 Remaining days: {rem} of {dim} ({ratio:.0%})\n"
-        f"🎯 Monthly forecast: {monthly_forecast} lessons → tier {bucket}"
-    )
+    elif step == "date":
+        dt = None
+        for fmt in ("%d.%m.%Y", "%Y-%m-%d"):
+            try:
+                dt = datetime.strptime(text, fmt)
+                break
+            except ValueError:
+                continue
+        if not dt:
+            m = await update.message.reply_text("❗ Invalid date. Try again.")
+            await track_message(m, context)
+            return
+        context.user_data["first_date"] = dt
+        dim = calendar.monthrange(dt.year, dt.month)[1]
+        rem = dim - dt.day + 1
+        if rem < 1:
+            m = await update.message.reply_text("❗ Date out of range.")
+            await track_message(m, context)
+            return
+        context.user_data["days_in_month"] = dim
+        context.user_data["days_left"] = rem
+        context.user_data["ratio"] = rem / dim
+        m = await update.message.reply_text("🎵 How many lessons does the student want to buy?")
+        context.user_data["step"] = "lessons"
+        await track_message(m, context)
 
-    short_msg = (
-        f"🎵 Lessons: {lessons_partial}\n"
-        f"💵 Price per lesson: {price_per_lesson} €\n"
-        f"💰 Total price: {total_price} €"
-    )
-    keyboard = InlineKeyboardMarkup([
-        [InlineKeyboardButton("📊 Details", callback_data="show_details")],
-        [InlineKeyboardButton("🔁 New calculation", callback_data="restart_calc")]
-    ])
-    sent = await update.message.reply_text(short_msg, reply_markup=keyboard)
-    msgs = context.user_data.get("messages", [])
-    msgs.append(sent.message_id)
-    context.user_data["messages"] = msgs
+    elif step == "lessons":
+        if not text.isdigit() or int(text) <= 0:
+            m = await update.message.reply_text("❗ Enter a positive number.")
+            await track_message(m, context)
+            return
+        lessons = int(text)
+        city = context.user_data["city"]
+        students = context.user_data["students"]
+        first_date = context.user_data["first_date"]
+        dim = context.user_data["days_in_month"]
+        rem = context.user_data["days_left"]
+        ratio = context.user_data["ratio"]
 
-    return ConversationHandler.END
+        forecast = max(1, round_half_away(lessons / ratio))
+        price, tier = pick_price(city, students, forecast)
+        total = lessons * price
+
+        context.user_data["details"] = (
+            f"📍 City: {city}\n"
+            f"👥 Students: {students}\n"
+            f"📅 First lesson: {first_date:%d.%m.%Y}\n"
+            f"📆 Remaining days: {rem} of {dim} ({ratio:.0%})\n"
+            f"🎯 Forecast: {forecast} lessons → tier {tier}"
+        )
+
+        msg = (
+            f"🎵 Lessons: {lessons}\n"
+            f"💵 Price per lesson: {price} €\n"
+            f"💰 Total price: {total} €"
+        )
+        kb = InlineKeyboardMarkup([
+            [InlineKeyboardButton("📊 Details", callback_data="show_details")],
+            [InlineKeyboardButton("🔁 New calculation", callback_data="restart_calc")]
+        ])
+        m = await update.message.reply_text(msg, reply_markup=kb)
+        await track_message(m, context)
+
+        context.user_data["step"] = "done"
 
 async def show_details(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    details = context.user_data.get("details_msg", "No details found.")
-    await send_and_track(query.message.chat, details, context)
+    q = update.callback_query
+    await q.answer()
+    d = context.user_data.get("details", "No details.")
+    m = await q.message.reply_text(d)
+    await track_message(m, context)
 
 async def restart_calc(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-
-    # Удаляем все старые сообщения
-    try:
-        for msg_id in context.user_data.get("messages", []):
-            await query.message.chat.delete_message(msg_id)
-    except Exception:
-        pass
-
-    context.user_data.clear()
+    q = update.callback_query
+    await q.answer()
+    await clear_chat(q.message.chat, context)
 
     kb = [["Vilnius", "Kaunas", "Klaipėda"]]
-    await send_and_track(
-        query.message.chat,
+    m = await q.message.chat.send_message(
         "🇱🇹📍 Choose city:",
-        context,
         reply_markup=ReplyKeyboardMarkup(kb, one_time_keyboard=True, resize_keyboard=True)
     )
-    return CITY
+    context.user_data["step"] = "city"
+    await track_message(m, context)
 
-async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await send_and_track(update.message.chat, "❌ Cancelled.", context, reply_markup=ReplyKeyboardRemove())
-    return ConversationHandler.END
-
+# ---------- Run ----------
 def main():
     if not TOKEN:
-        print("❌ Error: please set TELEGRAM_TOKEN environment variable")
+        print("❌ TELEGRAM_TOKEN not set")
         return
 
     app = ApplicationBuilder().token(TOKEN).build()
-
-    conv = ConversationHandler(
-        entry_points=[CommandHandler("start", start)],
-        states={
-            CITY: [MessageHandler(filters.TEXT & ~filters.COMMAND, choose_city)],
-            STUDENTS: [MessageHandler(filters.TEXT & ~filters.COMMAND, choose_students)],
-            DATE: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_date)],
-            LESSONS: [MessageHandler(filters.TEXT & ~filters.COMMAND, compute)],
-        },
-        fallbacks=[CommandHandler("cancel", cancel)],
-        allow_reentry=True,
-    )
-
-    app.add_handler(conv)
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     app.add_handler(CallbackQueryHandler(show_details, pattern="^show_details$"))
     app.add_handler(CallbackQueryHandler(restart_calc, pattern="^restart_calc$"))
-
     print("✅ Bot is running. Press Ctrl+C to stop.")
     app.run_polling()
 
