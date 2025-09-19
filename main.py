@@ -1,1 +1,186 @@
-import osimport loggingfrom datetime import datetimefrom decimal import Decimal, ROUND_HALF_UP  # to match Excel's ROUND half-away-from-zerofrom telegram import Updatefrom telegram.ext import (    ApplicationBuilder,    CommandHandler,    MessageHandler,    filters,    ConversationHandler,    ContextTypes,)# Logginglogging.basicConfig(    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO)ASK_DATE, ASK_DAYS, ASK_LESSONS = range(3)def round_half_away_from_zero(x: float) -> int:    """Excel-like ROUND(x,0): halves go away from zero."""    return int(Decimal(str(x)).quantize(Decimal("0"), rounding=ROUND_HALF_UP))# Pricing grid (Vilnius), applied to the FORECAST monthly lessons (not the partial)def get_price_per_lesson(monthly_forecast: int) -> int:    if monthly_forecast >= 9:        return 30    elif monthly_forecast == 8:        return 33    elif monthly_forecast >= 6:        return 35    elif monthly_forecast >= 4:        return 40    else:        return 50async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):    await update.message.reply_text(        "👋 Hello! I’m your lesson fee calculator.\n\n"        "Step 1/3 — Enter the date of the first lesson (DD.MM.YYYY or YYYY-MM-DD)\n"        "Example: 19.09.2025"    )    return ASK_DATEasync def ask_days(update: Update, context: ContextTypes.DEFAULT_TYPE):    # Parse date in two common formats    date_str = (update.message.text or "").strip()    lesson_date = None    for fmt in ("%d.%m.%Y", "%Y-%m-%d"):        try:            lesson_date = datetime.strptime(date_str, fmt)            break        except ValueError:            continue    if not lesson_date:        await update.message.reply_text(            "❌ Invalid date format.\nPlease enter like 19.09.2025 or 2025-09-19."        )        return ASK_DATE    context.user_data["lesson_date"] = lesson_date    await update.message.reply_text(        "Step 2/3 — How many days are in this month? (28, 29, 30, or 31)"    )    return ASK_DAYSasync def ask_lessons(update: Update, context: ContextTypes.DEFAULT_TYPE):    text = (update.message.text or "").strip()    if not text.isdigit() or int(text) not in (28, 29, 30, 31):        await update.message.reply_text("❌ Please enter 28, 29, 30, or 31.")        return ASK_DAYS    days_in_month = int(text)    lesson_date: datetime = context.user_data["lesson_date"]    if lesson_date.day > days_in_month:        await update.message.reply_text(            "❌ The first lesson day exceeds the number of days in this month.\n"            "Please re-enter the date or month length."        )        return ASK_DAYS    remaining_days = days_in_month - lesson_date.day + 1  # inclusive    proportion = remaining_days / days_in_month    # Store for the next step    context.user_data["days_in_month"] = days_in_month    context.user_data["remaining_days"] = remaining_days    context.user_data["proportion"] = proportion    await update.message.reply_text(        "Step 3/3 — How many lessons does the student want to buy for the rest of this month?"    )    return ASK_LESSONSasync def calculate(update: Update, context: ContextTypes.DEFAULT_TYPE):    text = (update.message.text or "").strip()    if not text.isdigit() or int(text) <= 0:        await update.message.reply_text("❌ Please enter a positive whole number of lessons.")        return ASK_LESSONS    lessons_partial = int(text)    lesson_date: datetime = context.user_data["lesson_date"]    days_in_month = context.user_data["days_in_month"]    remaining_days = context.user_data["remaining_days"]    proportion = context.user_data["proportion"]    # Excel-like logic:    # monthly_forecast = ROUND( lessons_in_rest / proportion , 0 )    monthly_forecast = max(1, round_half_away_from_zero(lessons_partial / proportion))    price_per_lesson = get_price_per_lesson(monthly_forecast)    total_price = lessons_partial * price_per_lesson    response = (        f"📅 First lesson date: {lesson_date.strftime('%d.%m.%Y')}\n"        f"📆 Remaining days: {remaining_days} of {days_in_month} (ratio: {proportion:.2f})\n"        f"🎯 Monthly forecast (Excel-style): {monthly_forecast} lessons\n"        f"💵 Price tier from forecast: {price_per_lesson} € / lesson\n"        f"🧮 Partial-month lessons: {lessons_partial}\n"        f"💰 Total for this partial month: {total_price} €"    )    await update.message.reply_text(response)    return ConversationHandler.ENDasync def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):    await update.message.reply_text("🚫 Cancelled.")    return ConversationHandler.ENDdef main():    token = os.getenv("TELEGRAM_TOKEN")    if not token:        print("❌ Error: please set TELEGRAM_TOKEN environment variable")        return    app = ApplicationBuilder().token(token).build()    conv = ConversationHandler(        entry_points=[CommandHandler("start", start)],        states={            ASK_DATE: [MessageHandler(filters.TEXT & ~filters.COMMAND, ask_days)],            ASK_DAYS: [MessageHandler(filters.TEXT & ~filters.COMMAND, ask_lessons)],            ASK_LESSONS: [MessageHandler(filters.TEXT & ~filters.COMMAND, calculate)],        },        fallbacks=[CommandHandler("cancel", cancel)],        allow_reentry=True,    )    app.add_handler(conv)    print("✅ Bot is running. Press Ctrl+C to stop.")    app.run_polling()if __name__ == "__main__":    main()
+import os
+import calendar
+from datetime import datetime
+from decimal import Decimal, ROUND_HALF_UP
+
+from telegram import (
+    Update, ReplyKeyboardMarkup, ReplyKeyboardRemove,
+    InlineKeyboardMarkup, InlineKeyboardButton
+)
+from telegram.ext import (
+    ApplicationBuilder, CommandHandler, MessageHandler, CallbackQueryHandler,
+    ConversationHandler, ContextTypes, filters
+)
+
+TOKEN = os.getenv("TELEGRAM_TOKEN")
+
+# ---------- Pricing grids ----------
+PRICES = {
+    "Vilnius": {
+        1: {"1-3": 50, "4-5": 40, "6-7": 35, "8": 33, "9+": 30},
+        2: {"1-3": 65, "4-5": 55, "6-7": 50, "8": 45, "9+": 40},
+    },
+    "Kaunas": {
+        1: {"1-3": 40, "4-5": 35, "6-7": 32, "8": 30, "9+": 28},
+        2: {"1-3": 55, "4-5": 50, "6-7": 45, "8": 40, "9+": 35},
+    },
+    "Klaipėda": {
+        1: {"1-3": 35, "4-5": 30, "6-7": 27, "8": 25, "9+": 23},
+        2: {"1-3": 50, "4-5": 45, "6-7": 40, "8": 35, "9+": 30},
+    },
+}
+
+# ---------- States ----------
+CITY, STUDENTS, DATE, LESSONS = range(4)
+
+def round_half_away_from_zero(x: float) -> int:
+    return int(Decimal(str(x)).quantize(Decimal("0"), rounding=ROUND_HALF_UP))
+
+def pick_price(city: str, students: int, monthly_forecast: int) -> tuple[int, str]:
+    grid = PRICES[city][students]
+    if monthly_forecast >= 9:
+        return grid["9+"], "9+"
+    elif monthly_forecast == 8:
+        return grid["8"], "8"
+    elif monthly_forecast >= 6:
+        return grid["6-7"], "6-7"
+    elif monthly_forecast >= 4:
+        return grid["4-5"], "4-5"
+    else:
+        return grid["1-3"], "1-3"
+
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    kb = [["Vilnius", "Kaunas", "Klaipėda"]]
+    await update.message.reply_text(
+        "🌍 Choose city:",
+        reply_markup=ReplyKeyboardMarkup(kb, one_time_keyboard=True, resize_keyboard=True)
+    )
+    return CITY
+
+async def choose_city(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    city = update.message.text.strip()
+    if city not in PRICES:
+        await update.message.reply_text("Please tap a city from the keyboard.")
+        return CITY
+    context.user_data["city"] = city
+
+    kb = [["1 student", "2 students"]]
+    await update.message.reply_text(
+        "👥 How many students attend the lesson?",
+        reply_markup=ReplyKeyboardMarkup(kb, one_time_keyboard=True, resize_keyboard=True)
+    )
+    return STUDENTS
+
+async def choose_students(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text = (update.message.text or "").lower()
+    students = 2 if "2" in text else 1
+    context.user_data["students"] = students
+
+    await update.message.reply_text(
+        "📅 Enter the date of the first lesson (DD.MM.YYYY or YYYY-MM-DD):",
+        reply_markup=ReplyKeyboardRemove()
+    )
+    return DATE
+
+async def get_date(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    s = (update.message.text or "").strip()
+    dt = None
+    for fmt in ("%d.%m.%Y", "%Y-%m-%d"):
+        try:
+            dt = datetime.strptime(s, fmt)
+            break
+        except ValueError:
+            continue
+    if not dt:
+        await update.message.reply_text("❗ Invalid date. Use DD.MM.YYYY or YYYY-MM-DD.")
+        return DATE
+
+    context.user_data["first_date"] = dt
+    dim = calendar.monthrange(dt.year, dt.month)[1]
+    rem = dim - dt.day + 1
+    if rem < 1:
+        await update.message.reply_text("❗ Date seems out of range for the month. Try again.")
+        return DATE
+
+    context.user_data["days_in_month"] = dim
+    context.user_data["days_left"] = rem
+    context.user_data["ratio"] = rem / dim
+
+    await update.message.reply_text("🎵 How many lessons does the student want to buy for the rest of this month?")
+    return LESSONS
+
+async def compute(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text = (update.message.text or "").strip()
+    if not text.isdigit() or int(text) <= 0:
+        await update.message.reply_text("❗ Please enter a positive whole number.")
+        return LESSONS
+
+    lessons_partial = int(text)
+    city = context.user_data["city"]
+    students = context.user_data["students"]
+    first_date: datetime = context.user_data["first_date"]
+    dim = context.user_data["days_in_month"]
+    rem = context.user_data["days_left"]
+    ratio = context.user_data["ratio"]
+
+    monthly_forecast = max(1, round_half_away_from_zero(lessons_partial / ratio))
+    price_per_lesson, bucket = pick_price(city, students, monthly_forecast)
+    total_price = lessons_partial * price_per_lesson
+
+    context.user_data["details_msg"] = (
+        f"📍 City: {city}\n"
+        f"👥 Students: {students}\n"
+        f"📅 First lesson: {first_date:%d.%m.%Y}\n"
+        f"📆 Remaining days: {rem} of {dim} ({ratio:.0%})\n"
+        f"🎯 Monthly forecast: {monthly_forecast} lessons → tier {bucket}"
+    )
+
+    short_msg = (
+        f"🎵 Lessons: {lessons_partial}\n"
+        f"💵 Price per lesson: {price_per_lesson} €\n"
+        f"💰 Total price: {total_price} €"
+    )
+    keyboard = InlineKeyboardMarkup(
+        [[InlineKeyboardButton("📊 Details", callback_data="show_details")]]
+    )
+    await update.message.reply_text(short_msg, reply_markup=keyboard)
+
+    return ConversationHandler.END
+
+async def show_details(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    details = context.user_data.get("details_msg", "No details found.")
+    await query.message.reply_text(details)
+
+async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("❌ Cancelled.", reply_markup=ReplyKeyboardRemove())
+    return ConversationHandler.END
+
+def main():
+    if not TOKEN:
+        print("❌ Error: please set TELEGRAM_TOKEN environment variable")
+        return
+
+    app = ApplicationBuilder().token(TOKEN).build()
+
+    conv = ConversationHandler(
+        entry_points=[CommandHandler("start", start)],
+        states={
+            CITY: [MessageHandler(filters.TEXT & ~filters.COMMAND, choose_city)],
+            STUDENTS: [MessageHandler(filters.TEXT & ~filters.COMMAND, choose_students)],
+            DATE: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_date)],
+            LESSONS: [MessageHandler(filters.TEXT & ~filters.COMMAND, compute)],
+        },
+        fallbacks=[CommandHandler("cancel", cancel)],
+        allow_reentry=True,
+    )
+
+    app.add_handler(conv)
+    app.add_handler(CallbackQueryHandler(show_details, pattern="^show_details$"))
+
+    print("✅ Bot is running. Press Ctrl+C to stop.")
+    app.run_polling()
+
+if __name__ == "__main__":
+    main()
