@@ -52,7 +52,7 @@ def pick_price(city: str, students: int, monthly_forecast: int) -> tuple[int, st
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     kb = [["Vilnius", "Kaunas", "Klaipėda"]]
     await update.message.reply_text(
-        "🇱🇹 🌍 Choose city:",
+        "🇱🇹📍 Choose city:",
         reply_markup=ReplyKeyboardMarkup(kb, one_time_keyboard=True, resize_keyboard=True)
     )
     return CITY
@@ -140,9 +140,10 @@ async def compute(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"💵 Price per lesson: {price_per_lesson} €\n"
         f"💰 Total price: {total_price} €"
     )
-    keyboard = InlineKeyboardMarkup(
-        [[InlineKeyboardButton("📊 Details", callback_data="show_details")]]
-    )
+    keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton("📊 Details", callback_data="show_details")],
+        [InlineKeyboardButton("🔁 New calculation", callback_data="restart_calc")]
+    ])
     await update.message.reply_text(short_msg, reply_markup=keyboard)
 
     return ConversationHandler.END
@@ -152,6 +153,26 @@ async def show_details(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.answer()
     details = context.user_data.get("details_msg", "No details found.")
     await query.message.reply_text(details)
+
+async def restart_calc(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+
+    # Удаляем старое сообщение с кнопками
+    try:
+        await query.message.delete()
+    except Exception:
+        pass
+
+    # Сбрасываем сохранённые данные пользователя
+    context.user_data.clear()
+
+    kb = [["Vilnius", "Kaunas", "Klaipėda"]]
+    await query.message.chat.send_message(
+        "🇱🇹📍 Choose city:",
+        reply_markup=ReplyKeyboardMarkup(kb, one_time_keyboard=True, resize_keyboard=True)
+    )
+    return CITY
 
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("❌ Cancelled.", reply_markup=ReplyKeyboardRemove())
@@ -178,6 +199,7 @@ def main():
 
     app.add_handler(conv)
     app.add_handler(CallbackQueryHandler(show_details, pattern="^show_details$"))
+    app.add_handler(CallbackQueryHandler(restart_calc, pattern="^restart_calc$"))
 
     print("✅ Bot is running. Press Ctrl+C to stop.")
     app.run_polling()
