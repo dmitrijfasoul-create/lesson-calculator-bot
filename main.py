@@ -99,7 +99,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         students = 2 if "2" in text else 1
         context.user_data["students"] = students
         m = await update.message.reply_text(
-            "📅 Enter the date of the first lesson (DD.MM.YYYY or YYYY-MM-DD):",
+            "📅 Enter the date of the first *paid* lesson (DD.MM.YYYY or YYYY-MM-DD):\n(for example: 20.09.2025)",
             reply_markup=ReplyKeyboardRemove()
         )
         context.user_data["step"] = "date"
@@ -151,7 +151,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data["details"] = (
             f"📍 City: {city}\n"
             f"👥 Students: {students}\n"
-            f"📅 First lesson: {first_date:%d.%m.%Y}\n"
+            f"📅 First paid lesson: {first_date:%d.%m.%Y}\n"
             f"📆 Remaining days: {rem} of {dim} ({ratio:.0%})\n"
             f"🎯 Forecast: {forecast} lessons → tier {tier}"
         )
