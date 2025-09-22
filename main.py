@@ -99,9 +99,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         students = 2 if "2" in text else 1
         context.user_data["students"] = students
         m = await update.message.reply_text(
-            "📅 Enter the date of the first _paid_ lesson (DD.MM.YYYY or YYYY-MM-DD):\n(for example: 20.09.2025)",
-            reply_markup=ReplyKeyboardRemove(),
-            parse_mode="MarkdownV2"
+            "📅 Enter the date of the first *paid* lesson (DD.MM.YYYY or YYYY-MM-DD):\n(for example: 20.09.2025)",
+            reply_markup=ReplyKeyboardRemove()
         )
         context.user_data["step"] = "date"
         await track_message(m, context)
