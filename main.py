@@ -2,6 +2,7 @@ import os
 import calendar
 from datetime import datetime
 from decimal import Decimal, ROUND_HALF_UP
+import json
 
 from telegram import (
     Update, ReplyKeyboardMarkup, ReplyKeyboardRemove,
@@ -15,8 +16,6 @@ from telegram.ext import (
 TOKEN = os.getenv("TELEGRAM_TOKEN")
 
 # ---------- Pricing ----------
-import json
-
 with open("prices.json", "r", encoding="utf-8") as f:
     PRICES = json.load(f)
 
@@ -25,7 +24,7 @@ def round_half_away(x):
     return int(Decimal(str(x)).quantize(Decimal("0"), rounding=ROUND_HALF_UP))
 
 def pick_price(city, students, forecast):
-    grid = PRICES[city][students]
+    grid = PRICES[city][str(students)]
     if forecast >= 9:
         return grid["9+"], "9+"
     elif forecast == 8:
@@ -89,7 +88,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         students = 2 if "2" in text else 1
         context.user_data["students"] = students
         m = await update.message.reply_text(
-            "📅 Enter the date of the first *paid* lesson (DD.MM.YYYY or YYYY-MM-DD):\n(for example: 20.09.2025)",
+            "📅 Enter the date of the first paid lesson (DD.MM.YYYY or YYYY-MM-DD):\n(for example: 20.09.2025)",
             reply_markup=ReplyKeyboardRemove()
         )
         context.user_data["step"] = "date"
