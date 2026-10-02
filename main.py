@@ -84,6 +84,7 @@ def admin_stats_keyboard(year, month):
     if (year, month) < (current_year, current_month):
         next_year, next_month_value = get_next_month(year, month)
         buttons.append([InlineKeyboardButton("Next month ▶", callback_data=f"admin_stats:{next_year}:{next_month_value}")])
+    buttons.append([InlineKeyboardButton("🔄 New calculation", callback_data="restart_calc")])
     return InlineKeyboardMarkup(buttons)
 
 async def send_admin_stats(target, user_id, year=None, month=None):
