@@ -13,7 +13,17 @@ from telegram.ext import (
     CallbackQueryHandler, ContextTypes, filters
 )
 
+from analytics import (
+    AnalyticsStore,
+    clamp_to_current_month,
+    format_stats_report,
+    get_current_local_month,
+    next_month as get_next_month,
+    previous_month,
+)
+
 TOKEN = os.getenv("TELEGRAM_TOKEN")
+ANALYTICS = AnalyticsStore()
 
 # ---------- Pricing ----------
 with open("prices.json", "r", encoding="utf-8") as f:
@@ -53,23 +63,60 @@ async def clear_chat(chat, context):
             pass
     context.user_data.clear()
 
+async def begin_calculation(chat, context, user_id=None, incoming_message=None):
+    await clear_chat(chat, context)
+    context.user_data["analytics_session_id"] = ANALYTICS.start_session(user_id)
+    kb = [["Vilnius", "Kaunas", "Klaipėda"]]
+    m = await chat.send_message(
+        "🇱🇹📍 Choose city:",
+        reply_markup=ReplyKeyboardMarkup(kb, one_time_keyboard=True, resize_keyboard=True)
+    )
+    context.user_data["step"] = "city"
+    await track_message(incoming_message, context)
+    await track_message(m, context)
+
+def admin_stats_keyboard(year, month):
+    current_year, current_month = get_current_local_month()
+    buttons = [
+        [InlineKeyboardButton("◀ Previous month", callback_data=f"admin_stats:{previous_month(year, month)[0]}:{previous_month(year, month)[1]}")],
+        [InlineKeyboardButton("Current month", callback_data=f"admin_stats:{current_year}:{current_month}")],
+    ]
+    if (year, month) < (current_year, current_month):
+        next_year, next_month_value = get_next_month(year, month)
+        buttons.append([InlineKeyboardButton("Next month ▶", callback_data=f"admin_stats:{next_year}:{next_month_value}")])
+    return InlineKeyboardMarkup(buttons)
+
+async def send_admin_stats(target, user_id, year=None, month=None):
+    if not ANALYTICS.is_admin(user_id):
+        await target.reply_text("Access denied.")
+        return
+
+    if year is None or month is None:
+        year, month = get_current_local_month()
+    year, month = clamp_to_current_month(year, month)
+    stats = ANALYTICS.stats_for_month(year, month)
+    await target.reply_text(
+        format_stats_report(stats),
+        reply_markup=admin_stats_keyboard(year, month)
+    )
+
 # ---------- Steps ----------
 async def my_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     if not user:
         return
-    await update.message.reply_text(f"Your Telegram ID: {user.id}")
+    kb = InlineKeyboardMarkup([
+        [InlineKeyboardButton("🧮 Start calculation", callback_data="start_calc")]
+    ])
+    await update.message.reply_text(f"Your Telegram ID: {user.id}", reply_markup=kb)
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await clear_chat(update.message.chat, context)
-    kb = [["Vilnius", "Kaunas", "Klaipėda"]]
-    m = await update.message.reply_text(
-        "🇱🇹📍 Choose city:",
-        reply_markup=ReplyKeyboardMarkup(kb, one_time_keyboard=True, resize_keyboard=True)
-    )
-    context.user_data["step"] = "city"
-    await track_message(update.message, context)
-    await track_message(m, context)
+    user_id = update.effective_user.id if update.effective_user else None
+    await begin_calculation(update.message.chat, context, user_id, update.message)
+
+async def admin_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id if update.effective_user else None
+    await send_admin_stats(update.message, user_id)
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = (update.message.text or "").strip()
@@ -82,6 +129,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await track_message(m, context)
             return
         context.user_data["city"] = text
+        ANALYTICS.set_city(context.user_data.get("analytics_session_id"), text)
         kb = [["1 student", "2 students"]]
         m = await update.message.reply_text(
             "👥 How many students attend the lesson?",
@@ -162,6 +210,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ])
         m = await update.message.reply_text(msg, reply_markup=kb)
         await track_message(m, context)
+        ANALYTICS.complete_session(context.user_data.get("analytics_session_id"))
 
         context.user_data["step"] = "done"
 
@@ -175,15 +224,31 @@ async def show_details(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def restart_calc(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     await q.answer()
-    await clear_chat(q.message.chat, context)
+    user_id = q.from_user.id if q.from_user else None
+    await begin_calculation(q.message.chat, context, user_id)
 
-    kb = [["Vilnius", "Kaunas", "Klaipėda"]]
-    m = await q.message.chat.send_message(
-        "🇱🇹📍 Choose city:",
-        reply_markup=ReplyKeyboardMarkup(kb, one_time_keyboard=True, resize_keyboard=True)
+async def start_calc_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    await q.answer()
+    user_id = q.from_user.id if q.from_user else None
+    await begin_calculation(q.message.chat, context, user_id)
+
+async def admin_stats_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    await q.answer()
+    user_id = q.from_user.id if q.from_user else None
+    parts = q.data.split(":")
+    year = int(parts[1])
+    month = int(parts[2])
+    if not ANALYTICS.is_admin(user_id):
+        await q.message.reply_text("Access denied.")
+        return
+    year, month = clamp_to_current_month(year, month)
+    stats = ANALYTICS.stats_for_month(year, month)
+    await q.message.edit_text(
+        format_stats_report(stats),
+        reply_markup=admin_stats_keyboard(year, month)
     )
-    context.user_data["step"] = "city"
-    await track_message(m, context)
 
 # ---------- Run ----------
 def main():
@@ -191,10 +256,14 @@ def main():
         print("❌ TELEGRAM_TOKEN not set")
         return
 
+    ANALYTICS.initialize()
     app = ApplicationBuilder().token(TOKEN).build()
     app.add_handler(CommandHandler("my_id", my_id))
+    app.add_handler(CommandHandler("admin_stats", admin_stats))
     app.add_handler(CommandHandler("start", start))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+    app.add_handler(CallbackQueryHandler(admin_stats_button, pattern="^admin_stats:"))
+    app.add_handler(CallbackQueryHandler(start_calc_button, pattern="^start_calc$"))
     app.add_handler(CallbackQueryHandler(show_details, pattern="^show_details$"))
     app.add_handler(CallbackQueryHandler(restart_calc, pattern="^restart_calc$"))
     print("✅ Bot is running. Press Ctrl+C to stop.")
