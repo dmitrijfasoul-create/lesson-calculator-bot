@@ -54,6 +54,12 @@ async def clear_chat(chat, context):
     context.user_data.clear()
 
 # ---------- Steps ----------
+async def my_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    if not user:
+        return
+    await update.message.reply_text(f"Your Telegram ID: {user.id}")
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await clear_chat(update.message.chat, context)
     kb = [["Vilnius", "Kaunas", "Klaipėda"]]
@@ -186,6 +192,7 @@ def main():
         return
 
     app = ApplicationBuilder().token(TOKEN).build()
+    app.add_handler(CommandHandler("my_id", my_id))
     app.add_handler(CommandHandler("start", start))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     app.add_handler(CallbackQueryHandler(show_details, pattern="^show_details$"))
