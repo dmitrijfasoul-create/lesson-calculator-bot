@@ -31,6 +31,22 @@ class AnalyticsTests(unittest.TestCase):
         self.assertFalse(store.is_admin(111))
         self.assertIsNone(store.start_session(6517854385))
 
+    def test_multiple_admin_ids_are_excluded_from_sessions(self):
+        admin_ids = parse_admin_ids("6517854385,6117764683")
+        store = AnalyticsStore(database_url="postgres://example", hmac_secret="secret", admin_ids=admin_ids)
+        store._psycopg = object()
+
+        def fail_connect():
+            self.fail("Admin calculations must not attempt analytics database writes.")
+
+        store._connect = fail_connect
+
+        self.assertTrue(store.is_admin(6517854385))
+        self.assertTrue(store.is_admin(6117764683))
+        self.assertFalse(store.is_admin(111))
+        self.assertIsNone(store.start_session(6517854385))
+        self.assertIsNone(store.start_session(6117764683))
+
     def test_monthly_pseudonym_changes_between_months(self):
         september = monthly_pseudonym("secret", 123456789, "2026-09")
         october = monthly_pseudonym("secret", 123456789, "2026-10")
